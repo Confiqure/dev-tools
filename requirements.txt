@@ -1,0 +1,5 @@
+matplotlib
+pyinstaller
+pyobjc
+PyQt5
+screeninfo
