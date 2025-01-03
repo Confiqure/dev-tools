@@ -1,19 +1,40 @@
 import sys
-import time
 import threading
-from PyQt5.QtWidgets import (
-    QApplication,
-    QPushButton,
-    QVBoxLayout,
-    QHBoxLayout,
-    QWidget,
-    QLabel,
-)
-from PyQt5.QtCore import Qt
+import time
+
+import Quartz
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
+from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QColor, QFont, QIcon, QPainter, QPixmap
+from PyQt5.QtWidgets import (
+    QApplication,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+)
 from screeninfo import get_monitors
-import Quartz
+
+
+def create_icon_with_text(text: str) -> QIcon:
+    size = 32
+    pixmap = QPixmap(size, size)
+    pixmap.fill(Qt.transparent)
+
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing, True)
+    painter.setPen(QColor("black"))
+
+    font = QFont()
+    font.setBold(True)
+    font.setPointSize(18)
+    painter.setFont(font)
+    painter.drawText(pixmap.rect(), Qt.AlignCenter, text)
+    painter.end()
+
+    return QIcon(pixmap)
 
 
 def get_monitor_bounds():
@@ -104,7 +125,8 @@ class MonitorUsageApp(QWidget):
 
     def timerEvent(self, event):
         if not self.tracking:
-            return  # Do nothing if tracking is paused
+            QApplication.setWindowIcon(create_icon_with_text(str("| |")))  # Pause icon
+            return
 
         total_usage = sum(self.monitor_usage)
         n = len(self.monitor_usage)
@@ -144,10 +166,12 @@ class MonitorUsageApp(QWidget):
         if max_monitor_idx == -1:
             # No meaningful "catch up" time
             self.balance_label.setText("All monitors are balanced: 0 sec")
+            QApplication.setWindowIcon(create_icon_with_text(":)"))
         else:
             self.balance_label.setText(
                 f"Monitor {max_monitor_idx + 1} needs {max_time_str} to reach balance"
             )
+            QApplication.setWindowIcon(create_icon_with_text(str(max_monitor_idx + 1)))
 
     def monitor_usage_tracker(self):
         while True:
