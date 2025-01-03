@@ -1,7 +1,15 @@
 import sys
 import time
 import threading
-from PyQt5.QtWidgets import QApplication, QPushButton, QVBoxLayout, QHBoxLayout, QWidget
+from PyQt5.QtWidgets import (
+    QApplication,
+    QPushButton,
+    QVBoxLayout,
+    QHBoxLayout,
+    QWidget,
+    QLabel,
+)
+from PyQt5.QtCore import Qt
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from screeninfo import get_monitors
@@ -41,6 +49,19 @@ def get_active_window_position():
     return None
 
 
+def format_time(seconds: float) -> str:
+    """
+    Return a string representing 'seconds' in sec, min, or hrs,
+    depending on the magnitude.
+    """
+    if seconds < 60:
+        return f"{seconds:.1f} sec"
+    elif seconds < 3600:
+        return f"{seconds / 60:.1f} min"
+    else:
+        return f"{seconds / 3600:.1f} hrs"
+
+
 class MonitorUsageApp(QWidget):
     def __init__(self):
         super().__init__()
@@ -65,6 +86,11 @@ class MonitorUsageApp(QWidget):
         self.toggle_button.clicked.connect(self.toggle_tracking)
         main_layout.addWidget(self.toggle_button)
 
+        # Add label for balance time
+        self.balance_label = QLabel("All monitors are balanced: 0 sec")
+        self.balance_label.setAlignment(Qt.AlignCenter)
+        main_layout.addWidget(self.balance_label)
+
         self.setLayout(main_layout)
 
         # Start monitoring thread
@@ -81,9 +107,11 @@ class MonitorUsageApp(QWidget):
             return  # Do nothing if tracking is paused
 
         total_usage = sum(self.monitor_usage)
+        n = len(self.monitor_usage)
 
-        if total_usage == 0:
-            normalized_percentages = [0] * len(self.monitor_usage)
+        # Compute pie chart percentages
+        if n == 0 or total_usage == 0:
+            normalized_percentages = [0] * n
         else:
             raw_percentages = [count / total_usage for count in self.monitor_usage]
             normalization_factor = 100 / sum(raw_percentages)
@@ -91,6 +119,35 @@ class MonitorUsageApp(QWidget):
 
         # Update pie chart
         self.update_pie_chart(normalized_percentages)
+
+        max_x = 0.0
+        max_monitor_idx = -1
+
+        if n > 1:  # only meaningful if there's more than one monitor
+            for i, usage_i in enumerate(self.monitor_usage):
+                numerator = total_usage - n * usage_i
+                denominator = n - 1
+                x = numerator / denominator  # how many seconds needed
+                if x > max_x:
+                    max_x = x
+                    max_monitor_idx = i
+
+        # If the result is negative (or n<2), set it to zero
+        if max_x < 0 or n < 2:
+            max_x = 0
+            max_monitor_idx = -1
+
+        # Convert to sec, min or hours
+        max_time_str = format_time(max_x)
+
+        # Set the label text
+        if max_monitor_idx == -1:
+            # No meaningful "catch up" time
+            self.balance_label.setText("All monitors are balanced: 0 sec")
+        else:
+            self.balance_label.setText(
+                f"Monitor {max_monitor_idx + 1} needs {max_time_str} to reach balance"
+            )
 
     def monitor_usage_tracker(self):
         while True:
@@ -102,7 +159,7 @@ class MonitorUsageApp(QWidget):
             if active_window_pos:
                 x, y, width, height = active_window_pos
                 for i, (mx, my, mwidth, mheight) in enumerate(self.monitor_bounds):
-                    if mx <= x < mx + mwidth and my <= y < mheight:
+                    if mx <= x < mx + mwidth and my <= y < my + mheight:
                         self.monitor_usage[i] += 1
                         break
             time.sleep(1)
