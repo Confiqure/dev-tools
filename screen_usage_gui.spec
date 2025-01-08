@@ -2,7 +2,7 @@
 
 
 a = Analysis(
-    ['monitor_usage_gui.py'],
+    ['screen_usage_gui.py'],
     pathex=[],
     binaries=[],
     datas=[],
@@ -22,7 +22,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='monitor_usage_gui',
+    name='screen_usage_gui',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -38,7 +38,7 @@ exe = EXE(
 )
 app = BUNDLE(
     exe,
-    name='monitor_usage_gui.app',
+    name='screen_usage_gui.app',
     icon=None,
     bundle_identifier=None,
 )

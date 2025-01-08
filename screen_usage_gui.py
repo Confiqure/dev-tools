@@ -37,12 +37,18 @@ def create_icon_with_text(text: str) -> QIcon:
     return QIcon(pixmap)
 
 
-def get_monitor_bounds():
-    monitors = get_monitors()
-    return [(m.x, m.y, m.width, m.height) for m in monitors]
+def get_screen_bounds():
+    """
+    Returns the bounding boxes of all available screens.
+    """
+    screens = get_monitors()  # from the 'screeninfo' library
+    return [(s.x, s.y, s.width, s.height) for s in screens]
 
 
 def get_active_window_position():
+    """
+    Returns the bounding box of the active (frontmost) window if available.
+    """
     try:
         # Get the active application
         active_app = Quartz.CGWindowListCopyWindowInfo(
@@ -63,7 +69,6 @@ def get_active_window_position():
                 y = bounds.get("Y", 0)
                 width = bounds.get("Width", 0)
                 height = bounds.get("Height", 0)
-                # print(f"Active Window Position: ({x}, {y}), Size: ({width}x{height})")
                 return x, y, width, height
     except Exception as e:
         print(f"Error getting active window position: {e}")
@@ -83,16 +88,15 @@ def format_time(seconds: float) -> str:
         return f"{seconds / 3600:.1f} hrs"
 
 
-class MonitorUsageApp(QWidget):
+class ScreenUsageApp(QWidget):
     def __init__(self):
         super().__init__()
-        self.monitor_bounds = get_monitor_bounds()
-        self.monitor_usage = [0] * len(self.monitor_bounds)
-        self.start_time = time.time()
-        self.tracking = True  # To toggle tracking
+        self.screen_bounds = get_screen_bounds()
+        self.screen_usage = [0] * len(self.screen_bounds)
+        self.tracking = True  # Toggle usage tracking
 
         # Set up the GUI layout
-        self.setWindowTitle("Monitor Usage Tracker")
+        self.setWindowTitle("Screen Usage Tracker")
         main_layout = QVBoxLayout()
         chart_layout = QHBoxLayout()
 
@@ -108,34 +112,34 @@ class MonitorUsageApp(QWidget):
         main_layout.addWidget(self.toggle_button)
 
         # Add label for balance time
-        self.balance_label = QLabel("All monitors are balanced: 0 sec")
+        self.balance_label = QLabel("All screens are balanced: 0 sec")
         self.balance_label.setAlignment(Qt.AlignCenter)
         main_layout.addWidget(self.balance_label)
 
         self.setLayout(main_layout)
 
-        # Start monitoring thread
-        self.monitoring_thread = threading.Thread(
-            target=self.monitor_usage_tracker, daemon=True
+        # Start tracking thread
+        self.tracking_thread = threading.Thread(
+            target=self.screen_usage_tracker, daemon=True
         )
-        self.monitoring_thread.start()
+        self.tracking_thread.start()
 
         # Start GUI update timer
         self.update_timer = self.startTimer(1000)
 
     def timerEvent(self, event):
         if not self.tracking:
-            QApplication.setWindowIcon(create_icon_with_text(str("| |")))  # Pause icon
+            QApplication.setWindowIcon(create_icon_with_text("| |"))  # Pause icon
             return
 
-        total_usage = sum(self.monitor_usage)
-        n = len(self.monitor_usage)
+        total_usage = sum(self.screen_usage)
+        n = len(self.screen_usage)
 
         # Compute pie chart percentages
         if n == 0 or total_usage == 0:
             normalized_percentages = [0] * n
         else:
-            raw_percentages = [count / total_usage for count in self.monitor_usage]
+            raw_percentages = [count / total_usage for count in self.screen_usage]
             normalization_factor = 100 / sum(raw_percentages)
             normalized_percentages = [p * normalization_factor for p in raw_percentages]
 
@@ -143,48 +147,52 @@ class MonitorUsageApp(QWidget):
         self.update_pie_chart(normalized_percentages)
 
         max_x = 0.0
-        max_monitor_idx = -1
+        max_screen_idx = -1
 
-        if n > 1:  # only meaningful if there's more than one monitor
-            for i, usage_i in enumerate(self.monitor_usage):
+        # Only meaningful if there's more than one screen
+        if n > 1:
+            for i, usage_i in enumerate(self.screen_usage):
                 numerator = total_usage - n * usage_i
                 denominator = n - 1
                 x = numerator / denominator  # how many seconds needed
                 if x > max_x:
                     max_x = x
-                    max_monitor_idx = i
+                    max_screen_idx = i
 
-        # If the result is negative (or n<2), set it to zero
+        # If the result is negative (or n < 2), set it to zero
         if max_x < 0 or n < 2:
             max_x = 0
-            max_monitor_idx = -1
+            max_screen_idx = -1
 
-        # Convert to sec, min or hours
+        # Convert to sec, min, or hours
         max_time_str = format_time(max_x)
 
         # Set the label text
-        if max_monitor_idx == -1:
+        if max_screen_idx == -1:
             # No meaningful "catch up" time
-            self.balance_label.setText("All monitors are balanced: 0 sec")
+            self.balance_label.setText("All screens are balanced: 0 sec")
             QApplication.setWindowIcon(create_icon_with_text(":)"))
         else:
             self.balance_label.setText(
-                f"Monitor {max_monitor_idx + 1} needs {max_time_str} to reach balance"
+                f"Screen {max_screen_idx + 1} needs {max_time_str} to reach balance"
             )
-            QApplication.setWindowIcon(create_icon_with_text(str(max_monitor_idx + 1)))
+            QApplication.setWindowIcon(create_icon_with_text(str(max_screen_idx + 1)))
 
-    def monitor_usage_tracker(self):
+    def screen_usage_tracker(self):
+        """
+        Continuously increments usage counters for the active screen.
+        """
         while True:
             if not self.tracking:
-                time.sleep(0.1)  # Sleep for a short while when paused
+                time.sleep(0.1)  # Sleep briefly when paused
                 continue
 
             active_window_pos = get_active_window_position()
             if active_window_pos:
                 x, y, width, height = active_window_pos
-                for i, (mx, my, mwidth, mheight) in enumerate(self.monitor_bounds):
-                    if mx <= x < mx + mwidth and my <= y < my + mheight:
-                        self.monitor_usage[i] += 1
+                for i, (sx, sy, swidth, sheight) in enumerate(self.screen_bounds):
+                    if sx <= x < sx + swidth and sy <= y < sy + sheight:
+                        self.screen_usage[i] += 1
                         break
             time.sleep(1)
 
@@ -195,14 +203,14 @@ class MonitorUsageApp(QWidget):
         # Validate percentages to ensure no NaN values
         if not any(percentages):
             percentages = [1] * len(percentages)
-            labels = [f"Monitor {i + 1} (No Data)" for i in range(len(percentages))]
+            labels = [f"Screen {i + 1} (No Data)" for i in range(len(percentages))]
         else:
-            labels = [f"Monitor {i + 1}" for i in range(len(percentages))]
+            labels = [f"Screen {i + 1}" for i in range(len(percentages))]
 
         ax.pie(
             percentages, labels=labels, autopct="%1.1f%%", startangle=90, normalize=True
         )
-        ax.set_title("Monitor Usage Distribution")
+        ax.set_title("Screen Usage Distribution")
         self.canvas.draw()
 
     def toggle_tracking(self):
@@ -212,6 +220,6 @@ class MonitorUsageApp(QWidget):
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    window = MonitorUsageApp()
+    window = ScreenUsageApp()
     window.show()
     sys.exit(app.exec())
