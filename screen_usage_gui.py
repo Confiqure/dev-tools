@@ -47,17 +47,17 @@ def get_screen_bounds():
 
 def get_active_window_position():
     """
-    Returns the bounding box of the active (frontmost) window if available.
+    Returns the bounding box (x, y, width, height) of the active (frontmost) window if available.
     """
     try:
-        # Get the active application
+        # Get the active application's windows
         active_app = Quartz.CGWindowListCopyWindowInfo(
             Quartz.kCGWindowListOptionOnScreenOnly
             | Quartz.kCGWindowListExcludeDesktopElements,
             Quartz.kCGNullWindowID,
         )
 
-        # Filter for the frontmost application window
+        # Filter for a frontmost, non-desktop window (layer = 0)
         active_window = next(
             (w for w in active_app if w.get("kCGWindowLayer") == 0), None
         )
@@ -73,6 +73,12 @@ def get_active_window_position():
     except Exception as e:
         print(f"Error getting active window position: {e}")
     return None
+
+
+def get_mouse_position():
+    """Returns the current mouse cursor position (x, y)."""
+    loc = Quartz.CGEventGetLocation(Quartz.CGEventCreate(None))
+    return (loc.x, loc.y)
 
 
 def format_time(seconds: float) -> str:
@@ -93,9 +99,18 @@ class ScreenUsageApp(QWidget):
         super().__init__()
         self.screen_bounds = get_screen_bounds()
         self.screen_usage = [0] * len(self.screen_bounds)
-        self.tracking = True  # Toggle usage tracking
 
-        # Set up the GUI layout
+        # Flags for manual pause and idle pause
+        self.user_paused = False  # True when user manually clicks "Pause"
+        self.idle_detected = False  # True when mouse hasn't moved for 2+ minutes
+
+        # Track the screen that was last active (for retroactive deduction)
+        self.last_active_screen = -1
+
+        # Store last mouse position and last move time
+        self.last_mouse_pos = get_mouse_position()
+        self.last_mouse_move_time = time.time()
+
         self.setWindowTitle("Screen Usage Tracker")
         main_layout = QVBoxLayout()
         chart_layout = QHBoxLayout()
@@ -106,7 +121,7 @@ class ScreenUsageApp(QWidget):
         chart_layout.addWidget(self.canvas)
         main_layout.addLayout(chart_layout)
 
-        # Add Start/Stop button
+        # Add Pause/Resume button
         self.toggle_button = QPushButton("Pause")
         self.toggle_button.clicked.connect(self.toggle_tracking)
         main_layout.addWidget(self.toggle_button)
@@ -118,90 +133,142 @@ class ScreenUsageApp(QWidget):
 
         self.setLayout(main_layout)
 
-        # Start tracking thread
+        # Start the background tracking thread
         self.tracking_thread = threading.Thread(
             target=self.screen_usage_tracker, daemon=True
         )
         self.tracking_thread.start()
 
-        # Start GUI update timer
+        # Start GUI update timer (updates once per second)
         self.update_timer = self.startTimer(1000)
 
     def timerEvent(self, event):
-        if not self.tracking:
-            QApplication.setWindowIcon(create_icon_with_text("| |"))  # Pause icon
-            return
-
-        total_usage = sum(self.screen_usage)
-        n = len(self.screen_usage)
-
-        # Compute pie chart percentages
-        if n == 0 or total_usage == 0:
-            normalized_percentages = [0] * n
+        """
+        Fires once per second to update the GUI (pie chart, label, icon),
+        and refresh the button text based on idle/manual pause status.
+        """
+        # Update the button text first
+        if self.user_paused:
+            self.toggle_button.setText("Resume")
+        elif self.idle_detected:
+            self.toggle_button.setText("Idle...")
         else:
-            raw_percentages = [count / total_usage for count in self.screen_usage]
-            normalization_factor = 100 / sum(raw_percentages)
-            normalized_percentages = [p * normalization_factor for p in raw_percentages]
+            self.toggle_button.setText("Pause")
 
-        # Update pie chart
-        self.update_pie_chart(normalized_percentages)
+        # Determine if we are actually tracking or not
+        is_tracking = (not self.user_paused) and (not self.idle_detected)
 
-        max_x = 0.0
-        max_screen_idx = -1
+        # Update the window icon to reflect state
+        if not is_tracking:
+            QApplication.setWindowIcon(create_icon_with_text("| |"))
+        else:
+            total_usage = sum(self.screen_usage)
+            n = len(self.screen_usage)
 
-        # Only meaningful if there's more than one screen
-        if n > 1:
-            for i, usage_i in enumerate(self.screen_usage):
-                numerator = total_usage - n * usage_i
-                denominator = n - 1
-                x = numerator / denominator  # how many seconds needed
-                if x > max_x:
-                    max_x = x
-                    max_screen_idx = i
+            # Compute pie chart percentages
+            if n == 0 or total_usage == 0:
+                normalized_percentages = [0] * n
+            else:
+                raw_percentages = [count / total_usage for count in self.screen_usage]
+                normalization_factor = 100 / sum(raw_percentages)
+                normalized_percentages = [
+                    p * normalization_factor for p in raw_percentages
+                ]
 
-        # If the result is negative (or n < 2), set it to zero
-        if max_x < 0 or n < 2:
-            max_x = 0
+            # Update pie chart
+            self.update_pie_chart(normalized_percentages)
+
+            # Compute “time to balance” and update label + icon
+            max_x = 0.0
             max_screen_idx = -1
 
-        # Convert to sec, min, or hours
-        max_time_str = format_time(max_x)
+            if n > 1:
+                for i, usage_i in enumerate(self.screen_usage):
+                    numerator = total_usage - n * usage_i
+                    denominator = n - 1
+                    x = numerator / denominator  # how many seconds needed
+                    if x > max_x:
+                        max_x = x
+                        max_screen_idx = i
 
-        # Set the label text
-        if max_screen_idx == -1:
-            # No meaningful "catch up" time
-            self.balance_label.setText("All screens are balanced: 0 sec")
-            QApplication.setWindowIcon(create_icon_with_text(":)"))
-        else:
-            self.balance_label.setText(
-                f"Screen {max_screen_idx + 1} needs {max_time_str} to reach balance"
-            )
-            QApplication.setWindowIcon(create_icon_with_text(str(max_screen_idx + 1)))
+            # If the result is negative (or only 1 screen), set it to zero
+            if max_x < 0 or n < 2:
+                max_x = 0
+                max_screen_idx = -1
+
+            max_time_str = format_time(max_x)
+            if max_screen_idx == -1:
+                self.balance_label.setText("All screens are balanced: 0 sec")
+                QApplication.setWindowIcon(create_icon_with_text(":)"))
+            else:
+                self.balance_label.setText(
+                    f"Screen {max_screen_idx + 1} needs {max_time_str} to reach balance"
+                )
+                QApplication.setWindowIcon(
+                    create_icon_with_text(str(max_screen_idx + 1))
+                )
 
     def screen_usage_tracker(self):
         """
-        Continuously increments usage counters for the active screen.
+        Continuously checks mouse movement (idle detection) and increments usage
+        counters for the active screen when tracking is enabled.
         """
-        while True:
-            if not self.tracking:
-                time.sleep(0.1)  # Sleep briefly when paused
-                continue
+        IDLE_LIMIT = 120  # 2 minutes in seconds
 
-            active_window_pos = get_active_window_position()
-            if active_window_pos:
-                x, y, width, height = active_window_pos
-                for i, (sx, sy, swidth, sheight) in enumerate(self.screen_bounds):
-                    if sx <= x < sx + swidth and sy <= y < sy + sheight:
-                        self.screen_usage[i] += 1
-                        break
+        while True:
+            # 1) Check mouse movement unconditionally (so we know when user moves again).
+            current_mouse_pos = get_mouse_position()
+
+            if current_mouse_pos != self.last_mouse_pos:
+                # Mouse moved
+                self.last_mouse_pos = current_mouse_pos
+                self.last_mouse_move_time = time.time()
+
+                # If we had been idle-detected, clear it
+                if self.idle_detected:
+                    self.idle_detected = False
+            else:
+                # Mouse hasn't moved: check how long
+                elapsed_idle = time.time() - self.last_mouse_move_time
+                # Only trigger idle if we are not paused or already idle
+                if (
+                    not self.idle_detected
+                    and not self.user_paused  # do not detect idle while paused
+                    and elapsed_idle > IDLE_LIMIT
+                ):
+                    self.idle_detected = True
+                    # Retroactively remove 2 minutes from the last active screen
+                    if self.last_active_screen != -1:
+                        self.screen_usage[self.last_active_screen] = max(
+                            0, self.screen_usage[self.last_active_screen] - IDLE_LIMIT
+                        )
+
+            # 2) Determine if we are currently tracking (not paused and not idle)
+            is_tracking = (not self.user_paused) and (not self.idle_detected)
+
+            if is_tracking:
+                # Increment usage on whichever screen is active
+                active_window_pos = get_active_window_position()
+                if active_window_pos:
+                    x, y, width, height = active_window_pos
+                    for i, (sx, sy, swidth, sheight) in enumerate(self.screen_bounds):
+                        if sx <= x < sx + swidth and sy <= y < sy + sheight:
+                            self.screen_usage[i] += 1
+                            self.last_active_screen = i
+                            break
+
+            # Sleep 1 second between increments
             time.sleep(1)
 
     def update_pie_chart(self, percentages):
+        """
+        Updates the matplotlib pie chart with the given percentages (one per screen).
+        """
         self.figure.clear()
         ax = self.figure.add_subplot(111)
 
-        # Validate percentages to ensure no NaN values
-        if not any(percentages):
+        if not any(percentages) and len(percentages) > 0:
+            # If everything is zero, show a dummy chart
             percentages = [1] * len(percentages)
             labels = [f"Screen {i + 1} (No Data)" for i in range(len(percentages))]
         else:
@@ -214,8 +281,17 @@ class ScreenUsageApp(QWidget):
         self.canvas.draw()
 
     def toggle_tracking(self):
-        self.tracking = not self.tracking
-        self.toggle_button.setText("Resume" if not self.tracking else "Pause")
+        """
+        Toggle user_paused. If user_paused was False -> True, that means Pause.
+        If user_paused was True -> False, that means Resume.
+        """
+        was_paused = self.user_paused
+        self.user_paused = not self.user_paused
+
+        # When resuming from a manual pause, reset the idle timer so
+        # that any mouse inactivity during the pause isn’t counted as idle.
+        if was_paused and not self.user_paused:
+            self.last_mouse_move_time = time.time()
 
 
 if __name__ == "__main__":
